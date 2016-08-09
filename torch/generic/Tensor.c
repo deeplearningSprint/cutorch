@@ -374,11 +374,6 @@ static int torch_Tensor_(select)(lua_State *L)
   int dimension = luaL_checkint(L, 2)-1;
   long sliceIndex = luaL_checklong(L, 3)-1;
 
-/*   THArgCheck(src->nDimension > 1, 1, "cannot select on a vector");
-  THArgCheck((dimension >= 0) && (dimension < src->nDimension), 2, "out of range");
-  THArgCheck((sliceIndex >= 0) && (sliceIndex < src->size[dimension]), 3, "out of range");
-*/
-
   if(tensor->nDimension > 1)
   {
     tensor = THCTensor_(newWithTensor)(state, tensor);
@@ -402,12 +397,12 @@ static int torch_Tensor_(select)(lua_State *L)
   return 1;
 }
 
-#ifdef THC_REAL_IS_FLOAT
 static int torch_Tensor_(indexSelect)(lua_State *L)
 {
   THCState *state = cutorch_getstate(L);
   int narg = lua_gettop(L);
-  THCTensor *tensor, *src, *index;
+  THCTensor *tensor, *src;
+  THCudaLongTensor *index;
   THLongTensor *longIndex;
   int dim;
   if (narg == 3)
@@ -415,18 +410,18 @@ static int torch_Tensor_(indexSelect)(lua_State *L)
     tensor = THCTensor_(new)(state);
     src = luaT_checkudata(L, 1, torch_Tensor);
     dim = luaL_checkint(L, 2) - 1;
-    index = luaT_toudata(L, 3, torch_Tensor);
+    index = luaT_toudata(L, 3, "torch.CudaLongTensor");
     longIndex = luaT_toudata(L, 3, "torch.LongTensor");
-    if (!index && !longIndex) luaT_typerror(L, 3, "LongTensor | Tensor");
+    if (!index && !longIndex) luaT_typerror(L, 3, "LongTensor | CudaLongTensor");
     luaT_pushudata(L,tensor,torch_Tensor);
   }
   else if(narg == 4)
   {
     src = luaT_checkudata(L, 2, torch_Tensor);
     dim = luaL_checkint(L, 3) - 1;
-    index = luaT_toudata(L, 4, torch_Tensor);
+    index = luaT_toudata(L, 4, "torch.CudaLongTensor");
     longIndex = luaT_toudata(L, 4, "torch.LongTensor");
-    if (!index && !longIndex) luaT_typerror(L, 4, "Tensor | LongTensor");
+    if (!index && !longIndex) luaT_typerror(L, 4, "CudaLongTensor | LongTensor");
     tensor = luaT_checkudata(L,1,torch_Tensor);
   }
   else
@@ -446,15 +441,18 @@ static int torch_Tensor_(indexSelect)(lua_State *L)
 static int torch_Tensor_(indexCopy)(lua_State *L)
 {
   int narg = lua_gettop(L);
-  THCTensor *tensor, *src, *index;
+  THCTensor *tensor, *src;
+  THCudaLongTensor *index;
   THLongTensor *longIndex;
+  THCTensor *realIndex;
   int dim;
   if(narg == 4)
   {
     dim = luaL_checkint(L, 2) - 1;
-    index = luaT_toudata(L, 3, torch_Tensor);
+    index = luaT_toudata(L, 3, "torch.CudaLongTensor");
     longIndex = luaT_toudata(L, 3, "torch.LongTensor");
-    if (!index && !longIndex) luaT_typerror(L, 3, "Tensor | LongTensor");
+    realIndex = luaT_toudata(L, 3, torch_Tensor);
+    if (!index && !longIndex && !realIndex) luaT_typerror(L, 3, "CudaLongTensor | LongTensor | Tensor");
     src = luaT_checkudata(L, 4, torch_Tensor);
     tensor = luaT_checkudata(L,1,torch_Tensor);
   }
@@ -463,27 +461,38 @@ static int torch_Tensor_(indexCopy)(lua_State *L)
     luaL_error(L,"Tensor, number, Tensor | LongTensor, Tensor expected");
     return 0;
   }
-
+  THCState *state = cutorch_getstate(L);
   if (index)
-    THCTensor_(indexCopy)(cutorch_getstate(L), tensor,dim,index,src);
-  else
-    THCTensor_(indexCopy_long)(cutorch_getstate(L), tensor,dim,longIndex,src);
+    THCTensor_(indexCopy)(state, tensor,dim,index,src);
+  else if (longIndex)
+    THCTensor_(indexCopy_long)(state, tensor,dim,longIndex,src);
+  else { // realIndex
+    index = THCudaLongTensor_new(state);
+    THLongStorage *indexSize = THCTensor_(newSizeOf)(state, realIndex);
+    THCudaLongTensor_resize(state, index, indexSize, NULL);
+    THLongStorage_free(indexSize);
+    TH_CONCAT_2(THCudaLongTensor_copyCuda  , Real)(state, index, realIndex);
+    THCTensor_(indexCopy)(state, tensor,dim,index,src);
+    THCudaLongTensor_free(state, index);
+  }
 
   return 1;
 }
 
+#ifdef THC_REAL_IS_FLOAT
 static int torch_Tensor_(indexAdd)(lua_State *L)
 {
   int narg = lua_gettop(L);
-  THCTensor *tensor, *src, *index;
+  THCTensor *tensor, *src;
+  THCudaLongTensor *index;
   THLongTensor *longIndex;
   int dim;
   if(narg == 4)
   {
     dim = luaL_checkint(L, 2) - 1;
-    index = luaT_toudata(L, 3, torch_Tensor);
+    index = luaT_toudata(L, 3, "torch.CudaLongTensor");
     longIndex = luaT_toudata(L, 3, "torch.LongTensor");
-    if (!index && !longIndex) luaT_typerror(L, 3, "Tensor | LongTensor");
+    if (!index && !longIndex) luaT_typerror(L, 3, "CudaLongTensor | LongTensor");
     src = luaT_checkudata(L, 4, torch_Tensor);
     tensor = luaT_checkudata(L,1,torch_Tensor);
   }
@@ -500,38 +509,54 @@ static int torch_Tensor_(indexAdd)(lua_State *L)
 
   return 1;
 }
+#endif
 
 static int torch_Tensor_(indexFill)(lua_State *L)
 {
   int narg = lua_gettop(L);
-  THCTensor *tensor, *index;
+  THCTensor *tensor;
+  THCudaLongTensor *index;
   THLongTensor *longIndex;
+  THCTensor *realIndex;
   real val;
   int dim;
   if(narg == 4)
   {
     dim = luaL_checkint(L, 2) - 1;
-    index = luaT_toudata(L, 3, torch_Tensor);
+    index = luaT_toudata(L, 3, "torch.CudaLongTensor");
     longIndex = luaT_toudata(L, 3, "torch.LongTensor");
-    if (!index && !longIndex) luaT_typerror(L, 3, "Tensor | LongTensor");
+    realIndex = luaT_toudata(L, 3, torch_Tensor);
+    if (!index && !longIndex && !realIndex) luaT_typerror(L, 3, "CudaLongTensor | LongTensor | Tensor");
+#ifdef THC_REAL_IS_HALF
+    val = THC_float2half((float)luaL_checknumber(L, 4));
+#else
     val = luaL_checknumber(L, 4);
+#endif
     tensor = luaT_checkudata(L,1,torch_Tensor);
   }
   else
   {
-    luaL_error(L,"Tensor, number, Tensor | LongTensor, number expected");
+    luaL_error(L,"Tensor, number, Tensor | LongTensor | CudaLongTensor, number expected");
     return 0;
   }
 
   if (index)
-    THCTensor_(indexFill)(cutorch_getstate(L), tensor,dim,index,val);
-  else
-    THCTensor_(indexFill_long)(cutorch_getstate(L), tensor,dim,longIndex,val);
+    THCTensor_(indexFill)(cutorch_getstate(L), tensor, dim, index, val);
+  else if (longIndex)
+    THCTensor_(indexFill_long)(cutorch_getstate(L), tensor, dim, longIndex, val);
+  else { // realIndex
+    THCState *state = cutorch_getstate(L);
+    index = THCudaLongTensor_new(state);
+    THLongStorage *indexSize = THCTensor_(newSizeOf)(state, realIndex);
+    THCudaLongTensor_resize(state, index, indexSize, NULL);
+    THLongStorage_free(indexSize);
+    TH_CONCAT_2(THCudaLongTensor_copyCuda  , Real)(state, index, realIndex);
+    THCTensor_(indexFill)(cutorch_getstate(L), tensor, dim, index, val);
+    THCudaLongTensor_free(state, index);
+  }
 
   return 1;
 }
-
-#endif // THC_REAL_IS_FLOAT
 
 static int torch_Tensor_(transpose)(lua_State *L)
 {
@@ -1274,12 +1299,12 @@ static const struct luaL_Reg torch_Tensor_(_) [] = {
   {"narrow", torch_Tensor_(narrow)},
   {"sub", torch_Tensor_(sub)},
   {"select", torch_Tensor_(select)},
-#ifdef THC_REAL_IS_FLOAT
   {"index", torch_Tensor_(indexSelect)},
   {"indexCopy", torch_Tensor_(indexCopy)},
+#ifdef THC_REAL_IS_FLOAT
   {"indexAdd", torch_Tensor_(indexAdd)},
-  {"indexFill", torch_Tensor_(indexFill)},
 #endif
+  {"indexFill", torch_Tensor_(indexFill)},
   {"transpose", torch_Tensor_(transpose)},
   {"t", torch_Tensor_(t)},
   {"unfold", torch_Tensor_(unfold)},
